@@ -3,215 +3,183 @@ import pandas as pd
 import requests
 import random
 import datetime
-import json
-from streamlit_extras.add_vertical_space import add_vertical_space
 
-# --- 頁面基本配置 ---
+# --- 1. 頁面基礎配置 ---
 st.set_page_config(
-    page_title="AI Growth Hub - 專業策略中心",
+    page_title="AI Growth Hub - 策略中心",
     page_icon="🌿",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-# --- 自定義 CSS 樣式 (模擬原有的質感) ---
+# --- 2. API 設定 (請確保在 Streamlit Cloud Secrets 設定 GEMINI_API_KEY) ---
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+except:
+    API_KEY = "" # 本地測試可暫時填寫於此
+
+API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
+
+# --- 3. 自定義 CSS (修正字體過擠與手機版顯示) ---
 st.markdown("""
     <style>
-    .main {
-        background-color: #F1F4F1;
-    }
-    .stButton>button {
-        border-radius: 12px;
-        font-weight: 700;
-        transition: all 0.3s;
-    }
-    .hero-box {
-        background: linear-gradient(120deg, #94A696 0%, #7A8D7C 100%);
-        padding: 2rem;
-        border-radius: 25px;
-        color: white;
-        margin-bottom: 2rem;
-    }
-    .brand-bio-section {
-        background-color: white;
-        padding: 2rem;
-        border-radius: 25px;
-        border-left: 5px solid #FFBF00;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.05);
-    }
+    .stApp { background-color: #F8FAF8; }
+    /* 解決文字擠在一塊的問題 */
+    .stMarkdown p { line-height: 1.8 !important; margin-bottom: 1.2rem !important; }
+    .stMarkdown h3 { margin-top: 1.5rem; color: #2D3A3A; border-bottom: 2px solid #E2E8F0; padding-bottom: 5px; }
+    /* 對話框樣式優化 */
+    .stChatMessage { border-radius: 15px; border: 1px solid #E2E8F0; background: white !important; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+    /* 移除 Streamlit 頂部預設工具列 */
+    div[data-testid="stToolbar"] { display: none; }
+    /* 標籤頁字體加粗 */
+    .stTabs [data-baseweb="tab"] { font-weight: 700; font-size: 16px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 初始化 Session State (跨頁面存儲) ---
+# --- 4. 初始化 Session 狀態 ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "brand_bio" not in st.session_state:
     st.session_state.brand_bio = ""
-if "current_tab" not in st.session_state:
-    st.session_state.current_tab = "工作台"
 
-# --- 常數與 API 配置 ---
-API_KEY = "" # 請在此填入您的 Gemini API Key
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={API_KEY}"
+# --- 5. 核心 AI 函數 ---
+def call_gemini(user_query, data_attachment=None):
+    if not API_KEY:
+        return "❌ 尚未設定 API Key。請至 Streamlit Cloud 設定 Secrets。"
 
-# --- 工具函數 ---
-
-def get_taipei_weather():
-    """模擬原有的氣象獲取功能"""
-    try:
-        r = requests.get('https://api.open-meteo.com/v1/forecast?latitude=25.03&longitude=121.56&current_weather=true')
-        data = r.json()
-        return f"{data['current_weather']['temperature']}度"
-    except:
-        return "氣候宜人"
-
-def call_gemini(user_prompt, attachments=None):
-    """呼叫 Gemini API 並維持 User/Model 交替"""
-    system_prompt = """你現在是專業的成長顧問 AI。
-    【文字輸出排版規範】
-    1. **嚴禁使用表格 (Strictly No Tables)**：絕對禁止使用 Markdown 或 HTML 表格呈現資訊。
-    2. **述敘式風格**：請改用「標題 (###)」配合「述敘性段落」來呈現所有分析。確保每一點分析都有完整的句子描述。
-    3. **段落間距**：每個章節或重點之間請空出一行。
-    4. **結構化模板 (僅限文字描述)**：
-       媒體名稱、主題、目的、說明、視覺建議、文案。
-
-    【結尾規範】
-    必須加上這段問句：「你想主推什麼樣的商品？它有什麼特色呢？歡迎提供給我，讓我幫您產生 AI 中英文版的圖片咒語」
+    # 系統指令：嚴格執行敘述式風格，禁絕表格
+    system_prompt = f"""你現在是專業的 AI Growth Hub 成長顧問。
+    【品牌背景】：{st.session_state.brand_bio or "尚未提供"}
+    
+    【文字輸出排版規範】：
+    1. **絕對禁止產出表格**：無論如何都不要使用表格，這在手機上體驗很差。
+    2. **敘述式風格**：請使用「### 標題」搭配「深入的敘述段落」。每一點建議都必須有完整的邏輯說明與數據洞察感。
+    3. **視覺間距**：段落與段落之間請保持空行。
+    4. **固定結尾**：回覆最後必須詢問：「你想主推什麼樣的商品？它有什麼特色呢？歡迎提供給我，讓我幫您產生 AI 中英文版的圖片咒語」。
     """
     
-    brand_context = f"\n\n【當前品牌基因】：\n{st.session_state.brand_bio or '未設定'}"
+    # 構造對話歷史，維持 User -> Model 順序
+    history_payload = []
+    for msg in st.session_state.chat_history[-10:]: # 取最近 10 筆
+        history_payload.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
     
-    # 構造歷史紀錄 (Gemini 要求必須是 User/Model 交替)
-    contents = []
-    for msg in st.session_state.chat_history[-10:]:
-        contents.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
-    
-    # 加入當前訊息
-    current_parts = [{"text": user_prompt}]
-    if attachments:
-        current_parts.insert(0, {"text": f"[資料參考]: {attachments}"})
+    # 加入當前訊息與附件數據
+    current_input = user_query
+    if data_attachment:
+        current_input = f"[參考數據資料]:\n{data_attachment}\n\n[需求]:\n{user_query}"
         
-    contents.append({"role": "user", "parts": current_parts})
+    history_payload.append({"role": "user", "parts": [{"text": current_input}]})
 
     payload = {
-        "systemInstruction": {"parts": [{"text": system_prompt + brand_context}]},
-        "contents": contents,
-        "tools": [{"google_search": {}}]
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": history_payload,
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"}
+        ]
     }
 
     try:
-        response = requests.post(API_URL, json=payload)
-        result = response.json()
-        text_out = result['candidates'][0]['content']['parts'][0]['text']
-        return text_out
+        response = requests.post(API_URL, json=payload, timeout=30)
+        data = response.json()
+        if 'error' in data:
+            return f"❌ API 報錯：{data['error']['message']}"
+        return data['candidates'][0]['content']['parts'][0]['text']
     except Exception as e:
-        return f"⚠️ 系統連線繁忙或 API Key 無效。錯誤: {str(e)}"
+        return f"⚠️ 系統連線異常：{str(e)}"
 
-# --- 側邊欄導覽 ---
-st.sidebar.title("🌿 AI Growth Hub")
-st.session_state.current_tab = st.sidebar.radio("切換視圖", ["工作台", "策略中心"])
-if st.sidebar.button("🗑️ 清除對話歷史"):
-    st.session_state.chat_history = []
-    st.rerun()
+# --- 6. 介面佈局 ---
+st.title("🌿 AI Growth Hub")
 
-# --- 主畫面邏輯 ---
+# 使用標籤頁區分功能，解決標頭重複問題
+tab1, tab2, tab3 = st.tabs(["🧬 品牌基因設定", "💬 策略中心", "📊 數據連線"])
 
-if st.session_state.current_tab == "工作台":
-    # Hero Section
-    st.markdown("""
-        <div class="hero-box">
-            <h1>AI Growth Hub 策略增長系統</h1>
-            <p>請設定品牌背景與數據，讓 AI 為您精準導航，提供具備市場洞察的商業建議。</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # STEP 1. 品牌基因設定
-    st.markdown('<div class="brand-bio-section">', unsafe_allow_html=True)
-    st.subheader("🧬 STEP 1. 品牌基因設定")
-    st.caption("建立您的品牌大腦，確保所有企劃建議皆符合品牌調性與市場定位。")
+# --- Tab 1: 品牌設定 ---
+with tab1:
+    st.markdown("### STEP 1. 建立品牌大腦")
+    st.caption("設定一次，確保所有企劃建議皆符合品牌調性與市場定位。")
     
-    bio_input = st.text_area(
-        "品牌基因輸入框",
+    # 提供複製提示詞的代碼塊
+    copy_text = "我現在要將我的品牌資訊導入 AI Growth Hub 策略系統。請幫我分析品牌名稱+品牌官網網址+品牌社群網址，並按格式整理：品牌名稱、核心價值與語氣、目標客群特徵、三大核心產品及其賣點、主要競爭對手與差異化、目前行銷重點。請以純文字格式呈現。"
+    st.code(copy_text, language=None)
+    st.caption("☝️ 點擊代碼框右上角按鈕即可複製分析指令")
+
+    brand_input = st.text_area(
+        "請貼入 AI 分析後的品牌基因內容：",
         value=st.session_state.brand_bio,
-        placeholder="品牌名稱、主力商品特徵、目標客群定位、核心競爭力...",
-        height=150,
-        label_visibility="collapsed"
+        placeholder="品牌名稱、核心價值、主力產品賣點...",
+        height=300
     )
     
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        copy_prompt = "我現在要將我的品牌資訊導入 AI Growth Hub 策略系統。請幫我分析品牌名稱+品牌官網網址+品牌社群網址，並整理一份『品牌基因簡報』：品牌名稱、核心價值與語氣、目標客群特徵、三大核心產品及其賣點、主要競爭對手與差異化、目前行銷重點。請以純文字格式呈現。"
-        st.code(copy_prompt, language=None)
-        st.caption("☝️ 點擊代碼框右上角可複製分析指令")
-        
-    with col2:
-        if st.button("儲存並更新基因", use_container_width=True, type="primary"):
-            st.session_state.brand_bio = bio_input
-            with st.spinner("AI 正在深度學習品牌 DNA..."):
-                reply = call_gemini(f"(系統提示：載入品牌基因：\n{bio_input}\n\n請用熱情語氣回覆並總結特色。結尾詢問：今天我們從哪裡開始？)")
-                st.session_state.chat_history.append({"role": "user", "content": f"更新品牌基因: {bio_input}"})
-                st.session_state.chat_history.append({"role": "model", "content": reply})
-                st.success("基因同步成功！已為您切換至策略中心。")
-                # 跳轉
-                # st.session_state.current_tab = "策略中心"
-                # st.rerun()
+    if st.button("儲存並更新品牌基因", type="primary", use_container_width=True):
+        st.session_state.brand_bio = brand_input
+        st.success("✅ 品牌基因已同步！AI 顧問現在已完全了解您的品牌。")
 
-    # STEP 2. 創意內容產出 (靈感引擎 3.0)
-    st.divider()
-    st.subheader("🎨 STEP 2. 創意內容產出 (靈感引擎 3.0)")
-    c1, c2, c3 = st.columns(3)
-    
-    platforms = {"daily_social": "FB / IG", "line_private": "LINE 群組", "threads": "Threads"}
-    
-    def trigger_engine(p_key):
-        weather = get_taipei_weather()
-        month = datetime.datetime.now().month
-        festivals = {1: "新年氣象", 2: "情人節氛圍", 5: "母親節商機", 12: "耶誕跨年熱點"}
-        trend = random.choice(["AI 科技美學", "極簡質感生活", "永續消費觀念", "數位游牧高效生活"])
-        
-        prompt = f"【靈感引擎 3.0】計算結果：氣象({weather})、節慶({festivals.get(month, '本月市場熱點')})、趨勢({trend})。請以此為核心產出 {platforms[p_key]} 的深度述敘性企劃。"
-        
-        with st.spinner("靈感引擎運算中..."):
-            res = call_gemini(prompt)
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
-            st.session_state.chat_history.append({"role": "model", "content": res})
-            st.toast("企劃已生成，請前往策略中心查看！")
-
-    if c1.button("📱 FB / IG", use_container_width=True): trigger_engine("daily_social")
-    if c2.button("💬 LINE 群組", use_container_width=True): trigger_engine("line_private")
-    if c3.button("🧵 Threads", use_container_width=True): trigger_engine("threads")
-
-    # STEP 3. 數據分析
-    st.divider()
-    st.subheader("📊 STEP 3. 數據與檔案分析")
-    uploaded_file = st.file_uploader("上傳銷售報表 (CSV 或 XLSX)", type=["csv", "xlsx"])
-    if uploaded_file:
-        if st.button("分析上傳數據"):
-            df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('csv') else pd.read_excel(uploaded_file)
-            data_summary = df.head(50).to_string() # 傳送部分數據給 AI
-            with st.spinner("正在透視數據..."):
-                reply = call_gemini("📈 請分析我上傳的銷售數據，指出增長亮點與建議。請用詳盡文字敘述，嚴禁表格。", attachments=data_summary)
-                st.session_state.chat_history.append({"role": "user", "content": "分析銷售數據報表"})
-                st.session_state.chat_history.append({"role": "model", "content": reply})
-                st.success("分析完成！")
-
-elif st.session_state.current_tab == "策略中心":
-    st.title("🤖 策略顧問模式")
-    st.caption("AI 已加載您的品牌基因，隨時準備進行深度企劃。")
-
-    # 顯示歷史訊息
+# --- Tab 2: 策略中心 ---
+with tab2:
+    # 顯示對話歷史
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # 對話輸入
-    if prompt := st.chat_input("請輸入您的需求..."):
-        with st.chat_message("user"):
-            st.markdown(prompt)
+    # 靈感引擎按鈕區 (隨機組合邏輯)
+    st.write("---")
+    st.write("💡 **靈感引擎 3.0** (每次點擊組合都不同)")
+    c1, c2, c3 = st.columns(3)
+
+    def run_inspiration(platform):
+        # 靈感引擎隨機資料庫
+        weather = f"{random.choice(['微涼清爽的', '和煦溫暖的', '陽光普照的', '細雨靜謐的'])} {random.randint(16, 28)}度"
+        festival = random.choice(["情人節浪漫商機", "週末質感提案", "春季美學生活", "開工回饋企劃", "母親節溫暖話題"])
+        trend = random.choice(["AI 科技美學", "極簡靜奢風 (Quiet Luxury)", "永續生活話題", "高效數位賦能", "情緒價值共鳴"])
         
-        with st.chat_message("model"):
-            with st.spinner("顧問撰寫中..."):
-                response = call_gemini(prompt)
-                st.markdown(response)
-                # 存入紀錄
+        prompt = f"【靈感引擎 3.0 智慧啟動】交叉計算結果：環境感({weather})、當前熱點({festival})、核心趨勢({trend})。請以此為核心為我產出一份具備實質深度的 {platform} 結構化企劃建議。內容請用流暢敘述呈現，嚴禁表格。"
+        
+        with st.chat_message("user"): st.markdown(prompt)
+        with st.chat_message("assistant"):
+            with st.spinner("AI 顧問正在進行深度運算與撰寫..."):
+                reply = call_gemini(prompt)
+                st.markdown(reply)
                 st.session_state.chat_history.append({"role": "user", "content": prompt})
-                st.session_state.chat_history.append({"role": "model", "content": response})
+                st.session_state.chat_history.append({"role": "model", "content": reply})
+
+    if c1.button("📱 FB / IG", use_container_width=True): run_inspiration("FB / IG")
+    if c2.button("💬 LINE 群組", use_container_width=True): run_inspiration("LINE 群組")
+    if c3.button("🧵 Threads", use_container_width=True): run_inspiration("Threads")
+
+    # 文字輸入框
+    if user_text := st.chat_input("輸入您的行銷需求..."):
+        st.session_state.chat_history.append({"role": "user", "content": user_text})
+        with st.chat_message("user"):
+            st.markdown(user_text)
+        
+        with st.chat_message("assistant"):
+            with st.spinner("顧問撰寫中..."):
+                reply = call_gemini(user_text)
+                st.markdown(reply)
+                st.session_state.chat_history.append({"role": "model", "content": reply})
+
+    if st.button("🗑️ 清空對話歷史", use_container_width=True):
+        st.session_state.chat_history = []
+        st.rerun()
+
+# --- Tab 3: 數據連線 ---
+with tab3:
+    st.markdown("### STEP 3. 銷售報表數據分析")
+    uploaded_file = st.file_uploader("上傳 CSV 或 Excel 銷售報表", type=["csv", "xlsx"])
+    
+    if uploaded_file:
+        st.success(f"檔案 {uploaded_file.name} 已載入！")
+        if st.button("開始進行數據透視分析", type="primary", use_container_width=True):
+            try:
+                df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('csv') else pd.read_excel(uploaded_file)
+                # 傳送摘要數據給 AI
+                data_summary = df.head(100).to_string()
+                
+                with st.spinner("正在解析數據中的增長機會..."):
+                    reply = call_gemini("請分析此份數據，指出增長亮點與潛在風險，並提供具體的行動建議。請使用詳盡敘述，絕對嚴禁表格。", data_attachment=data_summary)
+                    st.session_state.chat_history.append({"role": "user", "content": "分析銷售數據報表"})
+                    st.session_state.chat_history.append({"role": "model", "content": reply})
+                    st.info("分析已完成！請前往「策略中心」查看詳細報告。")
+            except Exception as e:
+                st.error(f"數據讀取失敗: {str(e)}")
